@@ -40,7 +40,10 @@ on:
     - cron: 0 8 * * 2
 
 env:
-  REPO_URL: https://github.com/hanwckf/immortalwrt-mt798x
+  REPO_URL: https://github.com/padavanonly/immortalwrt-mt798x-24.10
+  REPO_BRANCH: 2410
+  CONFIG_FILE: configs/rax3000m-emmc_2410.config
+  IMMORTALWRT_PACKAGES_BRANCH: openwrt-24.10
   FREE_DISK_SH: scripts/free_disk_space.sh
   ENV_SH: scripts/environment.sh
   DIY_SH: scripts/diy.sh
@@ -81,14 +84,14 @@ jobs:
     - name: 克隆源码
       working-directory: /workdir
       run: |
-        git clone $REPO_URL openwrt
+        git clone -b $REPO_BRANCH --single-branch --filter=blob:none $REPO_URL openwrt
         ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
 
     - name: 开启缓存
       uses: klever1988/cachewrtbuild@main
       with:
         ccache: 'true'
-        mixkey: 'openwrt21-cortexa53'
+        mixkey: 'openwrt24-cortexa53'
         prefix: ${{ github.workspace }}/openwrt
 
     - name: 更新 & 安装 feeds & 执行脚本
@@ -105,13 +108,13 @@ jobs:
     - name: 升级部分软件及 Go 语言
       run: |
         cd openwrt
-        rm -rf feeds/packages/net/{xray-core,v2ray-core,v2ray-geodata,sing-box,frp,zerotier,natmap,ddns-go,tcping}
+        rm -rf feeds/packages/net/{xray-core,v2ray-geodata,sing-box,frp,zerotier,natmap,ddns-go,tcping}
         rm -rf feeds/luci/luci-app-frp*
         rm -rf feeds/packages/utils/zoneinfo
-        wget -r -np -nH --cut-dirs=4 -P feeds/packages/net/ https://cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/tcping/ && find feeds/packages/net/tcping -type f -name "index.html*" -exec rm {} \;
-        wget -r -np -nH --cut-dirs=4 -P feeds/packages/net/ https://cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/natmap/ && find feeds/packages/net/natmap -type f -name "index.html*" -exec rm {} \;
-        wget -r -np -nH --cut-dirs=4 -P feeds/packages/net/ https://cdn.jsdelivr.net/gh/immortalwrt/packages@master/net/ddns-go/ && find feeds/packages/net/ddns-go -type f -name "index.html*" -exec rm {} \;
-        wget -r -np -nH --cut-dirs=4 -P feeds/packages/utils/ https://cdn.jsdelivr.net/gh/immortalwrt/packages@master/utils/zoneinfo/ && find feeds/packages/utils/zoneinfo -type f -name "index.html*" -exec rm {} \;
+        wget -r -np -nH --cut-dirs=4 -P feeds/packages/net/ https://cdn.jsdelivr.net/gh/immortalwrt/packages@${IMMORTALWRT_PACKAGES_BRANCH}/net/tcping/ && find feeds/packages/net/tcping -type f -name "index.html*" -exec rm {} \;
+        wget -r -np -nH --cut-dirs=4 -P feeds/packages/net/ https://cdn.jsdelivr.net/gh/immortalwrt/packages@${IMMORTALWRT_PACKAGES_BRANCH}/net/natmap/ && find feeds/packages/net/natmap -type f -name "index.html*" -exec rm {} \;
+        wget -r -np -nH --cut-dirs=4 -P feeds/packages/net/ https://cdn.jsdelivr.net/gh/immortalwrt/packages@${IMMORTALWRT_PACKAGES_BRANCH}/net/ddns-go/ && find feeds/packages/net/ddns-go -type f -name "index.html*" -exec rm {} \;
+        wget -r -np -nH --cut-dirs=4 -P feeds/packages/utils/ https://cdn.jsdelivr.net/gh/immortalwrt/packages@${IMMORTALWRT_PACKAGES_BRANCH}/utils/zoneinfo/ && find feeds/packages/utils/zoneinfo -type f -name "index.html*" -exec rm {} \;
         
         rm -rf feeds/packages/lang/golang
         git clone https://github.com/sbwml/packages_lang_golang -b 26.x feeds/packages/lang/golang
@@ -119,7 +122,7 @@ jobs:
     - name: 导入补丁和配置
       run: |
         [ -e files ] && mv files openwrt/files
-        cat configs/rax3000m-emmc_mtksdk.config >> openwrt/.config
+        cat "$CONFIG_FILE" > openwrt/.config
 
     - name: 设置无线控制界面样式
       if: env.USE_MTWIFI_CFG == 'true'
@@ -132,14 +135,20 @@ jobs:
         mkdir -p openwrt/files/lib/firmware
         cp eeprom/nx30pro_eeprom.bin openwrt/files/lib/firmware/MT7981_iPAiLNA_EEPROM.bin
         chmod 755 openwrt/files/lib/firmware/MT7981_iPAiLNA_EEPROM.bin
-        sed -i 's/caldata_extract_mmc/# caldata_extract_mmc/' openwrt/target/linux/mediatek/mt7981/base-files/lib/preinit/90_extract_caldata
+        caldata_script="openwrt/target/linux/mediatek/mt7981/base-files/lib/preinit/90_extract_caldata"
+        [ -f "$caldata_script" ] && sed -i 's/caldata_extract_mmc/# caldata_extract_mmc/' "$caldata_script" || true
     
     - name: 设置 dts 闪存频率
       if: env.USE_52MHZ == 'true'
       run: |
-        sed -i -e '/bus-width = <8>;/ a\	cap-mmc-highspeed;' openwrt/target/linux/mediatek/files-5.4/arch/arm64/boot/dts/mediatek/mt7981-cmcc-rax3000m-emmc.dts
-        sed -i 's/26000000/52000000/g' openwrt/target/linux/mediatek/files-5.4/arch/arm64/boot/dts/mediatek/mt7981-cmcc-rax3000m-emmc.dts
-        grep max-frequency openwrt/target/linux/mediatek/files-5.4/arch/arm64/boot/dts/mediatek/mt7981-cmcc-rax3000m-emmc.dts
+        dts_file=$(find openwrt/target/linux/mediatek -type f \( -name 'mt7981-cmcc-rax3000m-emmc.dts' -o -name 'mt7981b-cmcc-rax3000m-emmc.dtso' \) | head -n 1)
+        if [ -z "$dts_file" ]; then
+          echo "Cannot find RAX3000M eMMC DTS/overlay for 52MHz patch" >&2
+          exit 1
+        fi
+        grep -q 'cap-mmc-highspeed;' "$dts_file" || sed -i -e '/bus-width = <8>;/ a\	cap-mmc-highspeed;' "$dts_file"
+        sed -i 's/26000000/52000000/g' "$dts_file"
+        grep max-frequency "$dts_file"
 
     - name: SSH 链接
       uses: P3TERX/ssh2actions@v1.0.0
@@ -215,7 +224,11 @@ jobs:
           echo "- eeprom 未修改" >> release.txt
           eeprom_status="default_eeprom"
         fi
-        max_frequency=$(($(grep -oP "max-frequency = <\K[0-9]*" openwrt/target/linux/mediatek/files-5.4/arch/arm64/boot/dts/mediatek/mt7981-cmcc-rax3000m-emmc.dts) / 1000000))
+        dts_file=$(find openwrt/target/linux/mediatek -type f \( -name 'mt7981-cmcc-rax3000m-emmc.dts' -o -name 'mt7981b-cmcc-rax3000m-emmc.dtso' \) | head -n 1)
+        max_frequency="unknown"
+        if [ -n "$dts_file" ] && grep -q 'max-frequency' "$dts_file"; then
+          max_frequency=$(($(grep -oP "max-frequency = <\K[0-9]*" "$dts_file" | head -n 1) / 1000000))
+        fi
         echo "- 使用闪存频率: ${max_frequency}MHz" >> release.txt
         release_tag=$(date +"%Y.%m.%d-mt7981-cmcc_rax3000m-emmc-${wlan_luci_interface}-${eeprom_status}-${max_frequency}MHz")
         echo "release_tag=${release_tag}" >> $GITHUB_OUTPUT
